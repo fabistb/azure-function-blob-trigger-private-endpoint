@@ -1,0 +1,24 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "vnetName": {
+        "value": "ticket-function-vnet-001"
+      },
+      "applicationInsightsName": {
+        "value": "ticket-function-ai-001"
+      },
+      "storageName": {
+        "value": "ticketfunctionstorage001"
+      },
+      "keyVaultName": {
+        "value": "ticket-function-kv-001"
+      },
+      "functionAppName": {
+        "value": "ticket-function-app-001"
+      },
+      "privateEndpointName": {
+        "value": "ticket-private-endpoint-001"
+      }
+    }
+  }

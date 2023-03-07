@@ -16,11 +16,14 @@ param functionAppName string
 @description('The azure region in which the resources should be allocated.')
 param location string = resourceGroup().location
 
+@description('The private endpoint name')
+param privateEndpointName string
+
 @description('The name of the app service plan to run the azure function on.')
 var hostingPlanName = '${functionAppName}-asp'
 
 var vnetAddressPrefix = '10.0.0.0/16'
-var subnetAddressPrefix = '10.0.0/24'
+var subnetAddressPrefix = '10.0.0.0/24'
 var subnetName = 'privateLinkSubnet'
 
 resource vnet 'Microsoft.Network/virtualNetworks@2022-07-01' = {
@@ -68,9 +71,34 @@ resource blobStorage 'Microsoft.Storage/storageAccounts@2022-09-01' = {
   }
 }
 
+resource blobContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2022-09-01' = {
+  name: '${blobStorage.name}/default/example-trigger'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
 resource keyVault 'Microsoft.KeyVault/vaults@2022-07-01' = {
   name: keyVaultName
   location: location
+  properties: {
+    sku: {
+      name: 'standard'
+      family: 'A'
+    }
+    tenantId: subscription().tenantId
+    accessPolicies: [ 
+    ]
+    enableSoftDelete: false
+  }
+}
+
+resource blobStorageConnectionString 'Microsoft.KeyVault/vaults/secrets@2022-07-01' = {
+  parent: keyVault
+  name: 'StorageConnection'
+  properties: {
+    value: 'DefaultEndpointsProtocol=https;AccountName=${blobStorage.name};AccountKey=${listKeys(blobStorage.id, blobStorage.apiVersion).keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
+  }
 }
 
 resource appServicePlan 'Microsoft.Web/serverfarms@2022-03-01' = {
@@ -87,6 +115,9 @@ resource functionApp 'Microsoft.Web/sites@2022-03-01' = {
   name: functionAppName
   location: location
   kind: 'functionapp'
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     serverFarmId: appServicePlan.id
     siteConfig: {
@@ -95,24 +126,52 @@ resource functionApp 'Microsoft.Web/sites@2022-03-01' = {
       appSettings: [
         {
           name: 'AzureWebJobsStorage'
-          value: blobStorage.properties.primaryEndpoints.blob
+          value: 'DefaultEndpointsProtocol=https;AccountName=${blobStorage.name};AccountKey=${listKeys(blobStorage.id, blobStorage.apiVersion).keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
         }
         {
           name: 'FUNCTIONS_WORKER_RUNTIME'
           value: 'dotnet'
         }
         {
+          name: 'FUNCTIONS_EXTENSION_VERSION'
+          value: '~4'
+        }
+        {
           name: 'APPINSIGHTS_INSTRUMENTATIONKEY'
           value: applicationInsight.properties.InstrumentationKey
         }
+        {
+          name: 'StorageConnection'
+          value: '@Microsoft.KeyVault(SecretUri=${blobStorageConnectionString.properties.secretUri})'
+        }
       ]
     }
+    publicNetworkAccess: 'Enabled'
     httpsOnly: true
   }
 }
 
-resource privateEndpoint 'Microsoft.Network/privateEndpoints@2022-07-01' = {
-  name: 'abc'
+resource keyVaultAccessPolicy 'Microsoft.KeyVault/vaults/accessPolicies@2021-06-01-preview' = {
+  name: 'add'
+  parent: keyVault
+  properties: {
+    accessPolicies: [
+      {
+        tenantId: subscription().tenantId
+        objectId: functionApp.identity.principalId
+        permissions: {
+          secrets: [
+            'get'
+            'list'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource privateEndpointStorage 'Microsoft.Network/privateEndpoints@2022-07-01' = {
+  name: '${privateEndpointName}-storage'
   location: location
   properties: {
     subnet: {
@@ -120,16 +179,31 @@ resource privateEndpoint 'Microsoft.Network/privateEndpoints@2022-07-01' = {
     }
     privateLinkServiceConnections: [
       {
-        name: 'abc'
+        name: '${privateEndpointName}-storage'
         properties: {
-          privateLinkServiceId: functionApp.id
+          privateLinkServiceId: blobStorage.id
           groupIds: [
-            'function'
+            'Blob'
           ]
         }
       }
+    ]
+  }
+  dependsOn: [
+    vnet
+  ]
+}
+
+resource privateEndpointKeyVault 'Microsoft.Network/privateEndpoints@2022-07-01' = {
+  name: '${privateEndpointName}-vault'
+  location: location
+  properties: {
+    subnet: {
+      id: subnet.id
+    }
+    privateLinkServiceConnections: [
       {
-        name: 'bcd'
+        name: '${privateEndpointName}-vault'
         properties: {
           privateLinkServiceId: keyVault.id
           groupIds: [
@@ -137,12 +211,27 @@ resource privateEndpoint 'Microsoft.Network/privateEndpoints@2022-07-01' = {
           ]
         }
       }
+    ]
+  }
+  dependsOn: [
+    vnet
+  ]
+}
+
+resource privateEndpointFunction'Microsoft.Network/privateEndpoints@2022-07-01' = {
+  name: '${privateEndpointName}-function'
+  location: location
+  properties: {
+    subnet: {
+      id: subnet.id
+    }
+    privateLinkServiceConnections: [
       {
-        name: 'cde'
+        name: '${privateEndpointName}-function'
         properties: {
-          privateLinkServiceId: blobStorage.id
+          privateLinkServiceId: functionApp.id
           groupIds: [
-            'blob'
+            'sites'
           ]
         }
       }
@@ -153,18 +242,18 @@ resource privateEndpoint 'Microsoft.Network/privateEndpoints@2022-07-01' = {
   ]
 }
 
-resource privateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privateDnsZoneName'
+resource privateDnsZoneStorage 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.blob.${environment().suffixes.storage}'
   location: 'global'
   properties: {}
   dependsOn: [
     vnet
   ]
 }
-
-resource privateDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
-  parent: privateDnsZone
-  name: '-link'
+ 
+resource privateDnsZoneLinkStorage 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: privateDnsZoneStorage
+  name: '${privateDnsZoneStorage.name}-link'
   location: 'global'
   properties: {
     virtualNetwork: {
@@ -172,24 +261,100 @@ resource privateDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLin
     }
     registrationEnabled: false
   }
+  dependsOn: [
+    privateEndpointStorage
+  ]
 }
 
-resource privateEndpointDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2022-07-01' = {
-  name 'name'
+resource privateDnsZoneKeyVault'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink${environment().suffixes.keyvaultDns}'
+  location: 'global'
+  properties: {}
+  dependsOn: [
+    vnet
+  ]
+}
+
+resource privateDnsZoneLinkKeyVault 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: privateDnsZoneKeyVault
+  name: '${privateDnsZoneKeyVault.name}-link'
+  location: 'global'
+  properties: {
+    virtualNetwork: {
+      id: vnet.id
+    }
+    registrationEnabled: false
+  }
+  dependsOn: [
+    privateEndpointKeyVault
+  ]
+}
+
+resource privateDnsZoneFunction'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.azurewebsites.net'
+  location: 'global'
+  properties: {}
+  dependsOn: [
+    vnet
+  ]
+}
+
+resource privateDnsZoneLinkFunction 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: privateDnsZoneFunction
+  name: '${privateDnsZoneFunction.name}-link'
+  location: 'global'
+  properties: {
+    virtualNetwork: {
+      id: vnet.id
+    }
+    registrationEnabled: false
+  }
+  dependsOn: [
+    privateEndpointFunction
+  ]
+}
+
+resource privateEndpointDnsGroupStorage 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2022-07-01' = {
+  parent: privateEndpointStorage
+  name: 'storagednsgroupname'
   properties: {
     privateDnsZoneConfigs: [
       {
-        name: 'name'
+        name: 'config1'
         properties: {
-          privateDnsZoneId: privateDnsZone.id
+          privateDnsZoneId: privateDnsZoneStorage.id
         }
       }
     ]
   }
-  dependsOn: [
-    privateEndpoint
-  ]
 }
 
+resource privateEndpointDnsGroupKeyVault 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2022-07-01' = {
+  parent: privateEndpointKeyVault
+  name: 'keyvaultdnsgroupname'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'config1'
+        properties: {
+          privateDnsZoneId: privateDnsZoneKeyVault.id
+        }
+      }
+    ]
+  }
+}
 
-
+resource privateEndpointDnsGroupFunction 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2022-07-01' = {
+  parent: privateEndpointFunction
+  name: 'functiondnsgroupname'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'config1'
+        properties: {
+          privateDnsZoneId: privateDnsZoneFunction.id
+        }
+      }
+    ]
+  }
+}
