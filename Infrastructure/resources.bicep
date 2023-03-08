@@ -22,9 +22,11 @@ param privateEndpointName string
 @description('The name of the app service plan to run the azure function on.')
 var hostingPlanName = '${functionAppName}-asp'
 
-var vnetAddressPrefix = '10.0.0.0/16'
-var subnetAddressPrefix = '10.0.0.0/24'
+var vnetAddressPrefix = '10.0.0.0/23'
+var subnetAddressPrefix = '10.0.1.32/27'
+var functionSubnetAddressPrefix = '10.0.1.64/27'
 var subnetName = 'privateLinkSubnet'
+var functionSubNetName = 'functionSubnet'
 
 resource vnet 'Microsoft.Network/virtualNetworks@2022-07-01' = {
   name: vnetName
@@ -45,6 +47,26 @@ resource subnet 'Microsoft.Network/virtualNetworks/subnets@2022-07-01' = {
     addressPrefix: subnetAddressPrefix
     privateEndpointNetworkPolicies: 'Disabled' 
   }
+}
+
+resource functionSubNet 'Microsoft.Network/virtualNetworks/subnets@2022-07-01' = {
+  parent: vnet
+  name: functionSubNetName
+  properties: {
+    addressPrefix: functionSubnetAddressPrefix
+    privateEndpointNetworkPolicies: 'Disabled'
+    delegations: [
+      {
+        name: 'Microsoft.Web/serverFarms'
+        properties: {
+          serviceName: 'Microsoft.Web/serverFarms'
+        }
+      }
+    ]
+  }
+  dependsOn: [
+    subnet
+  ]
 }
 
 resource applicationInsight 'Microsoft.Insights/components@2020-02-02' = {
@@ -68,6 +90,7 @@ resource blobStorage 'Microsoft.Storage/storageAccounts@2022-09-01' = {
     accessTier: 'Hot'
     allowBlobPublicAccess: false
     allowSharedKeyAccess: true
+    publicNetworkAccess: 'Disabled'
   }
 }
 
@@ -90,6 +113,7 @@ resource keyVault 'Microsoft.KeyVault/vaults@2022-07-01' = {
     accessPolicies: [ 
     ]
     enableSoftDelete: false
+    publicNetworkAccess: 'Disabled'
   }
 }
 
@@ -108,7 +132,7 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2022-03-01' = {
     name: 'B1'
     tier: 'Basic'
   }
-  properties: {}
+  properties: { }
 }
 
 resource functionApp 'Microsoft.Web/sites@2022-03-01' = {
@@ -148,7 +172,12 @@ resource functionApp 'Microsoft.Web/sites@2022-03-01' = {
     }
     publicNetworkAccess: 'Enabled'
     httpsOnly: true
+    virtualNetworkSubnetId: functionSubNet.id
   }
+  dependsOn: [
+    keyVault
+    subnet
+  ]
 }
 
 resource keyVaultAccessPolicy 'Microsoft.KeyVault/vaults/accessPolicies@2021-06-01-preview' = {
@@ -267,7 +296,7 @@ resource privateDnsZoneLinkStorage 'Microsoft.Network/privateDnsZones/virtualNet
 }
 
 resource privateDnsZoneKeyVault'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privatelink${environment().suffixes.keyvaultDns}'
+  name: 'privatelink.vaultcore.azure.net'
   location: 'global'
   properties: {}
   dependsOn: [
@@ -327,6 +356,9 @@ resource privateEndpointDnsGroupStorage 'Microsoft.Network/privateEndpoints/priv
       }
     ]
   }
+  dependsOn: [
+    blobStorage
+  ]
 }
 
 resource privateEndpointDnsGroupKeyVault 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2022-07-01' = {
@@ -342,6 +374,9 @@ resource privateEndpointDnsGroupKeyVault 'Microsoft.Network/privateEndpoints/pri
       }
     ]
   }
+  dependsOn: [
+    keyVault
+  ]
 }
 
 resource privateEndpointDnsGroupFunction 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2022-07-01' = {
@@ -357,4 +392,7 @@ resource privateEndpointDnsGroupFunction 'Microsoft.Network/privateEndpoints/pri
       }
     ]
   }
+  dependsOn: [
+    functionApp
+  ]
 }
