@@ -132,19 +132,23 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2022-03-01' = {
     name: 'B1'
     tier: 'Basic'
   }
-  properties: { }
+  kind: 'linux'
+  properties: { 
+    reserved: true
+  }
 }
 
 resource functionApp 'Microsoft.Web/sites@2022-03-01' = {
   name: functionAppName
   location: location
-  kind: 'functionapp'
+  kind: 'functionapp,linux'
   identity: {
     type: 'SystemAssigned'
   }
   properties: {
     serverFarmId: appServicePlan.id
     siteConfig: {
+      linuxFxVersion: 'DOTNET-ISOLATED|6.0'
       alwaysOn: true
       minTlsVersion: '1.2'
       appSettings: [
